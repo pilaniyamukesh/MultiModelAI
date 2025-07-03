@@ -1,31 +1,49 @@
-from pydantic import BaseModel, Field, ValidationError, field_validator
-from typing import Optional, Dict, List, Any
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, Dict, List, Any, Union
 from enum import Enum
+import json
 
 
 class BaseFunction(BaseModel):
-    name: str = Field(description="The name of the function.")
+    name: Optional[str] = Field(None, description="The name of the function.")
 
 
 class BaseTool(BaseModel):
-    type: str = Field("function", Literal="function",
-                      description="The type of the tool. Currently only 'function' is supported.")
+    type: str = Field(
+        "function",
+        Literal="function",
+        description="The type of the tool. Currently only 'function' is supported.",
+    )
 
 
 class ToolsFunctionDefinition(BaseFunction):
     description: str = Field(description="A description of what the function does.")
     parameters: Dict[str, Any] = Field(
-        ..., description="The parameters the function accepts, described as a JSON Schema object.")
+        ...,
+        description="The parameters the function accepts, described as a JSON Schema object.",
+    )
 
 
 class ToolsCallFunction(BaseFunction):
-    arguments: Dict[str, Any] = Field(
-        description="The arguments to call the function with, described as a JSON object.")
+    arguments: Union[str, Dict[str, Any], None] = Field(
+        description="The arguments to call the function with, described as a JSON object."
+    )
+
+    @field_validator("arguments", mode="before")
+    @classmethod
+    def parse_arguments(cls, value):
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON string for arguments: {e}")
+        return value
 
 
 class Tools(BaseTool):
     function: ToolsFunctionDefinition = Field(
-        description="The definition of the function this tool provides.")
+        description="The definition of the function this tool provides."
+    )
 
 
 class ToolsCall(BaseTool):
@@ -43,32 +61,27 @@ class ChatRole(str, Enum):
 
 
 class ChatMessage(BaseModel):
-    role: str = Field("user",
-        description="The role of the message sender (e.g., user, assistant, system, tool).")
+    role: str = Field(
+        "user",
+        description="The role of the message sender (e.g., user, assistant, system, tool).",
+    )
     content: str = Field(description="The main content of the message.")
-
-    #@field_validator('content')
-    #@classmethod
-    #def content_must_not_be_empty_for_user_system(cls, v, info):
-    #    if info.data and info.data.get('role') in [ChatRole.user, ChatRole.system] and (v is None or v.strip() == ""):
-    #        raise ValueError(
-    #            f"Content cannot be empty for '{info.data.get('role')}' role messages.")
-    #    return ValueError
-
-
-class ChatResponseContent(BaseModel):
-    ChatMessage
-    tool_calls: Optional[List[ToolsCall]] = Field(
-        None, description="A list of tool calls made by the assistant in this message.")
 
 
 class ChatUsage(BaseModel):
-    input_tokens: Optional[int] = Field(None, description="The number of input tokens used.")
-    output_tokens: Optional[int] = Field(None, description="The number of output tokens generated.")
+    prompt_tokens: Optional[int] = Field(
+        None, description="The number of input tokens used."
+    )
+    completion_tokens: Optional[int] = Field(
+        None, description="The number of output tokens generated."
+    )
     total_tokens: Optional[int] = Field(
-        None, description="The total number of tokens (input + output).")
+        None, description="The total number of tokens (prompt + completion)."
+    )
 
-    @field_validator('input_tokens', 'output_tokens', 'total_tokens', mode='before')
+    @field_validator(
+        "prompt_tokens", "completion_tokens", "total_tokens", mode="before"
+    )
     @classmethod
     def convert_tokens_to_int(cls, v: Any) -> Optional[int]:
         if v is None:
@@ -76,17 +89,37 @@ class ChatUsage(BaseModel):
         try:
             return int(v)
         except (ValueError, TypeError) as e:
-            raise ValueError(f"Token count must be an integer, got {v} ({type(v)})") from e
+            raise ValueError(
+                f"Token count must be an integer, got {v} ({type(v)})"
+            ) from e
+
+
+class FinishReason(str, Enum):
+    stop = "stop"
+    length = "length"
+    error = "error"
+    tool_calls = "tool_calls"
+    end_turn = "end_turn"
 
 
 class ChatResponse(BaseModel):
-    id: Optional[str] = Field(None, description="A unique identifier for the chat completion.")
-    message: Optional[ChatResponseContent] = Field(
-        None, description="The content of the message, its role, and any associated tool calls.")
+    id: Optional[str] = Field(
+        None, description="A unique identifier for the chat completion."
+    )
+    model: Optional[str] = Field(
+        None, description="A unique identifier for the chat completion."
+    )
+    message: Optional[ChatMessage] = Field(
+        None,
+        description="The content of the message, its role, and any associated tool calls.",
+    )
+    tool_calls: Optional[List[ToolsCall]] = Field(
+        None, description="A list of tool calls made by the assistant in this message."
+    )
     usage: Optional[ChatUsage] = Field(
-        None, description="Token usage statistics for the completion.")
+        None, description="Token usage statistics for the completion."
+    )
     finish_reason: Optional[str] = Field(
-        None, description="The reason the model stopped generating tokens (e.g., 'stop', 'tool_calls').")
-    done_reason: Optional[str] = Field(
-        None, description="An alternative or additional reason for completion (e.g., from Ollama).")
-
+        None,
+        description="An alternative or additional reason for completion (e.g., from Ollama).",
+    )

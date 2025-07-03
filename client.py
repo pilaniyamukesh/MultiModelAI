@@ -1,60 +1,94 @@
 import importlib
-from typing import Optional, List, Union, Dict, Type, Any, Generator
+import logging
+import os
+from typing import Any, Generator, List, Optional, Type, Union
+
 from pydantic import BaseModel
+
 from providers.base import BaseProvider
-from utils.logger import get_logger
 from utils.types import ChatMessage, ChatResponse, Tools
 
 
 class Client:
-    def __init__(self, provider: str, model_name: str, api_key: Optional[str] = None):
-        self.logger = get_logger(__name__)
+
+    @classmethod
+    def get_logger(cls) -> logging.Logger:
+        logger = logging.getLogger(f"{cls.__name__.lower()}")
+        logger.setLevel(logging.INFO)
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        handler = logging.StreamHandler()
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        return logger
+
+    def __init__(
+        self,
+        provider: str,
+        model_name: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        timeout: Optional[int] = None,
+    ):
+        self.logger = self.get_logger()
         self.provider = provider.lower()
-        self.model_name = model_name  # if model_name is not passed then set to default
-        self.api_key = api_key  # Is this field is really required
+        self.model_name = model_name
+        self.api_key = self._get_api_key()
+        self.endpoint = endpoint
+        self.timeout = timeout
         self.client = self.__get_provider_client()
-        self.logger.info(f"Initialied client for provider: {self.provider}")
+
+
+    def _get_api_key(self, credentials_file: str = os.path.expanduser("~/_pw")) -> Optional[str]:
+        if self.provider.lower() == "ollama":
+            return None
+
+        env_var = f"{self.provider.upper()}_API_KEY"
+        api_key = os.getenv(env_var)
+
+        if not api_key:
+            self.logger.debug(f"{env_var} environment variable not found, checking in credentials file.")
+            try:
+                with open(credentials_file, "r") as file:
+                    credentials = dict(line.strip().split("=") for line in file)
+                    api_key = credentials.get("_api")
+                    os.environ[env_var] = api_key
+            except FileNotFoundError:
+                self.logger.error(f"The credentials file '{credentials_file}' is not found.")
+                raise
+            except Exception as e:
+                self.logger.error(f"Failed to read credentials file: {e}. Please check the file path and format.")
+                raise
+
+        if not api_key:
+            self.logger.error(f"Missing API key. Please set the {env_var} environment variable.")
+            raise ValueError(f"Missing API key. Please set the {env_var} environment variable.")
+
+        return api_key
 
     def __get_provider_client(self) -> BaseProvider:
-        print(f''''{importlib.import_module(f"providers.{self.provider}")}''')
-        try:
-            module = importlib.import_module(f"providers.{self.provider}")
-            print(f"module: {module}")
+        #try:
+            module = importlib.import_module(
+                f"providers.{self.provider}"
+            )
             class_name = f"{self.provider.capitalize()}Client"
-            print(f"class: {class_name}")
             provider_class = getattr(module, class_name)
+            self.logger.info(f"Initializing client for provider: {self.provider}")
 
-            # Retrieve the API key from environment variables if not provided
-            if self.provider != "ollama" and api_key is None:
-                env_var = f"{self.provider.upper()}_API_KEY"
-                api_key = os.getenv(env_var)
-                if api_key is None:
-                    self.logger.error(f"API key missing for provider: {self.provider}")
-                    raise ValueError(
-                        f"Missing API key. Please provide it explicitly or set the '{env_var}' environment variable."
-                    )
-                self.logger.debug(f"API key loaded from environment: {env_var}")
-
-            return provider_class(self.model_name, self.api_key)
-        except (ModuleNotFoundError, AttributeError) as e:
-            self.logger.error(f"Unsupported provider: {self.provider}")
-            raise ValueError(f"Unsupported provider: {self.provider}")
+            return provider_class(
+                self.model_name, self.api_key, self.endpoint, self.timeout
+            )
+        #except (ModuleNotFoundError, AttributeError):
+        #    raise ValueError(f"Unsupported provider: {self.provider}")
 
     def chat(
-            self,
-            message: List[Union[str, dict, ChatMessage]],
-            tools: Optional[List[Tools]] = None,  # Todo: check Tools
-            response_format: Optional[Type[BaseModel]] = None,
-            stream: Optional[bool] = False,
-            **kargs: Any
+        self,
+        messages: List[Union[str, dict, ChatMessage]],
+        model: Optional[str] = None,
+        tools: Optional[List[Tools]] = None,  # Todo: check Tools
+        response_format: Optional[Type[BaseModel]] = None,
+        stream: Optional[bool] = False,
+        **kargs: Any,
     ) -> Union[ChatResponse, Generator[ChatResponse, None, None]]:
-        return self.client.chat(
-            message,
-            tools,
-            response_format,
-            stream,
-            **kargs
-        )
+        return self.client.chat(messages, model, tools, response_format, stream, **kargs)
 
-    def all_model(self):
-        return self.client.all_model()
+    def models(self) -> Optional[List[str]]:
+        return self.client.models()
